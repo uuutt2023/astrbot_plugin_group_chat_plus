@@ -270,6 +270,18 @@ from .utils import (
     SmartConcurrentManager,  # 🆕 v1.2.2-hotfix.1: 智能并发合并管理器
     SystemPromptRewriter,  # 🆕 v1.2.2-hotfix.1: system_prompt 重写增强
 )
+# 🆕 v1.2.3-hotfix.3: 扁平 <-> 模块化 配置兼容层
+from .utils import (
+    FlatToModularAdapter,
+    ModularConfigProxy,
+    cfg_get,
+    cfg_set,
+    cfg_update,
+    get_config_adapter,
+    init_adapter,
+    init_adapter_from_schema_path,
+    reset_config_adapter,
+)
 from .utils.image_description_cache import (
     ImageDescriptionCache,
 )  # 🆕 v1.2.0: 图片描述缓存
@@ -1044,7 +1056,44 @@ class ChatPlus(Star):
         """
         super().__init__(context)
         self.context = context
-        self.config = config
+
+        # ========== 🆕 v1.2.3-hotfix.3: 兼容层初始化 ==========
+        # 1) 加载当前模块化配置（_conf_schema.json 已被替换为模块化结构）
+        # 2) 把 AstrBotConfig 包成 ModularConfigProxy，使后续 ``config.get``
+        #    调用既兼容旧的扁平 key，又能在未命中映射时回退到原生行为。
+        # 这样下面那一长串 ``config.get("xxx", default)`` 完全不用改，
+        # 全部由代理层自动把扁平 key 解析为模块化路径。
+        _modular_cfg_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "_conf_schema.json"
+        )
+        try:
+            with open(_modular_cfg_path, "r", encoding="utf-8") as _f:
+                _modular_snapshot = json.load(_f)
+        except Exception:
+            _modular_snapshot = {}
+        _adapter = init_adapter(
+            _modular_snapshot, legacy_flat_snapshot=None, force=True
+        )
+        # 🆕 兼容层：如果存在旧版扁平 schema 备份（_conf_schema_flat.json），
+        # 自动注册映射；否则 _flat_map 保持为空，proxy 退回到 raw.get() 行为。
+        _legacy_flat_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "_conf_schema_flat.json"
+        )
+        if os.path.exists(_legacy_flat_path):
+            try:
+                with open(_legacy_flat_path, "r", encoding="utf-8") as _f:
+                    _legacy_snapshot = json.load(_f)
+                _adapter.register_legacy_mapping(_legacy_snapshot)
+                logger.info(
+                    f"[ConfigAdapter] 已从 _conf_schema_flat.json 建立 "
+                    f"{len(_adapter._flat_map)} 项扁平 <-> 模块化映射"
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"[ConfigAdapter] 加载旧版扁平 schema 失败，将以 raw.get() 行为读取配置: {exc}"
+                )
+        self.config = ModularConfigProxy(config, _adapter)
+        self._config_adapter = _adapter
         self._raw_config_dict = self._extract_raw_config_dict(config)
         self._legacy_cooldown_migration_task = None
 
@@ -2683,7 +2732,9 @@ class ChatPlus(Star):
         # 缓存相关由 main.py 协调后传入，其他私信图片配置由 private_chat_main.py 自行读取 config
         self.private_chat_handler = PrivateChatMain(
             context=self.context,
-            config=config,
+            # 🆕 v1.2.3-hotfix.3: 传入兼容层代理，使私信模块同样可享受
+            # 扁平 <-> 模块化 配置的双向同步能力。
+            config=self.config,
             plugin_instance=self,
             data_dir=str(data_dir),
             private_chat_debug_mode=self.private_chat_enable_debug_log,

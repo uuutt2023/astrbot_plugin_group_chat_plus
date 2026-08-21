@@ -68,6 +68,19 @@ from .smart_concurrent_manager import SmartConcurrentManager
 from .ai_error_formatter import format_ai_error
 from .system_prompt_rewriter import SystemPromptRewriter, SystemPromptRewriteResult
 
+# 扁平 <-> 模块化 配置兼容层（v1.2.3-hotfix.3 新增）
+from .config_adapter import (
+    FlatToModularAdapter,
+    cfg_get,
+    cfg_set,
+    cfg_update,
+    get_config_adapter,
+    init_adapter,
+    init_adapter_from_schema_path,
+    reset_config_adapter,
+)
+from .config_proxy import ModularConfigProxy
+
 # 全局调试日志开关（供各模块统一读取）
 DEBUG_MODE: bool = False
 
@@ -131,6 +144,16 @@ __all__ = [
     # v1.2.2-hotfix.1 开始的新增 - system_prompt 重写器
     "SystemPromptRewriter",
     "SystemPromptRewriteResult",
+    # v1.2.3-hotfix.3 新增 - 扁平 <-> 模块化 配置兼容层
+    "FlatToModularAdapter",
+    "ModularConfigProxy",
+    "cfg_get",
+    "cfg_set",
+    "cfg_update",
+    "get_config_adapter",
+    "init_adapter",
+    "init_adapter_from_schema_path",
+    "reset_config_adapter",
     # 全局调试
     "DEBUG_MODE",
     "set_debug_mode",
