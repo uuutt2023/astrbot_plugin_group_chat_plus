@@ -3132,7 +3132,9 @@ class ProactiveChatManager:
                         return
 
                     # 使用platform_name_from_key尝试获取历史消息
-                    temp_history = ContextManager.get_history_messages_by_params(
+                    # 同步读盘放到线程池，避免冻结事件循环
+                    temp_history = await asyncio.to_thread(
+                        ContextManager.get_history_messages_by_params,
                         platform_name=platform_name_from_key,
                         is_private=is_private,
                         chat_id=chat_id,
@@ -5488,8 +5490,13 @@ class ProactiveChatManager:
                             "[主动对话保存] 无法获取存储路径，跳过保存到自定义历史"
                         )
                 else:
-                    history = ContextManager.get_history_messages_by_params(
-                        used_platform, is_private, chat_id, -1
+                    # 同步读盘放到线程池，避免冻结事件循环
+                    history = await asyncio.to_thread(
+                        ContextManager.get_history_messages_by_params,
+                        used_platform,
+                        is_private,
+                        chat_id,
+                        -1,
                     )
                     if history is None:
                         history = []

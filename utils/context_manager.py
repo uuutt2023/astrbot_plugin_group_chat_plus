@@ -1070,7 +1070,13 @@ class ContextManager:
                     logger.info("[上下文管理器] 回退到自定义存储读取历史消息...")
 
                 # 使用现有的自定义存储读取方法
-                history = ContextManager.get_history_messages(event, max_messages)
+                # 该方法会同步读取并反序列化整个历史 JSON 文件（最多 500 条，
+                # 实测约 3.4ms）。在事件循环里同步做这件事会冻结整个事件循环，
+                # 让所有并发消息、Web 面板请求和 LLM 流式响应一起等待。
+                # 这里放到线程池执行，事件循环可以继续调度其它协程。
+                history = await asyncio.to_thread(
+                    ContextManager.get_history_messages, event, max_messages
+                )
 
                 if history:
                     logger.info(
@@ -1289,8 +1295,13 @@ class ContextManager:
 
             # ========== 2. 回退到自定义存储 ==========
             if not official_success:
-                history = ContextManager.get_history_messages_by_params(
-                    platform_name, is_private, chat_id, max_messages
+                # 与写路径保持一致：同步读盘放到线程池，避免冻结事件循环
+                history = await asyncio.to_thread(
+                    ContextManager.get_history_messages_by_params,
+                    platform_name,
+                    is_private,
+                    chat_id,
+                    max_messages,
                 )
                 if history:
                     logger.info(

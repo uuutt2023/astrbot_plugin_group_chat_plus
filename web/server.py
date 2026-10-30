@@ -57,6 +57,12 @@ class WebPanelServer:
         # 启动日志自动清理（异步任务）
         self._log_cleaner_task = None
 
+        # 聊天记录文件元数据缓存：{文件路径: ((mtime_ns, size), 消息条数)}
+        # 前端每 3 秒轮询一次会话列表，若每次都重新 json.load 全部历史文件，
+        # 单次轮询即可阻塞事件循环数十毫秒（30 会话 × 500 条 ≈ 49ms）。
+        # 以 (mtime_ns, size) 作为失效键，文件未变时直接复用上次结果。
+        self._session_file_meta_cache: dict[str, tuple[tuple[int, int], int]] = {}
+
         # 静态文件目录
         self.static_dir = Path(__file__).parent / "static"
         self.template_dir = Path(__file__).parent / "templates"
@@ -3207,6 +3213,7 @@ h1{{color:#ff6b6b;}}p{{color:#a0a0b8;line-height:1.8;}}
 
         # 5. 扫描文件，按 chat_id 匹配到 canonical 条目
         chat_dir = self.data_dir / "chat_history"
+        seen_cache_keys: set[str] = set()
         if chat_dir.exists():
             for f in chat_dir.rglob("*.json"):
                 try:
@@ -3263,9 +3270,8 @@ h1{{color:#ff6b6b;}}p{{color:#a0a0b8;line-height:1.8;}}
 
                 try:
                     stat = f.stat()
-                    with open(f, "r", encoding="utf-8") as fh:
-                        data = json.load(fh)
-                    msg_count = len(data) if isinstance(data, list) else 0
+                    seen_cache_keys.add(str(f))
+                    msg_count = self._get_session_file_message_count(f, stat)
                     sessions[target_key].update(
                         {
                             "message_count": msg_count,
@@ -3283,7 +3289,41 @@ h1{{color:#ff6b6b;}}p{{color:#a0a0b8;line-height:1.8;}}
                         }
                     )
 
+        # 清理已被删除/重命名文件留下的缓存条目，避免缓存无限增长
+        if self._session_file_meta_cache:
+            stale = [
+                key
+                for key in self._session_file_meta_cache
+                if key not in seen_cache_keys
+            ]
+            for key in stale:
+                self._session_file_meta_cache.pop(key, None)
+
         return web.json_response({"ok": True, "sessions": sessions})
+
+    def _get_session_file_message_count(self, file_path: Path, stat) -> int:
+        """读取聊天记录文件的消息条数，带 (mtime_ns, size) 失效缓存。
+
+        会话列表接口由前端每 3 秒轮询一次，每次都会遍历全部历史文件。
+        直接 json.load 全部文件在会话数较多时单次即可产生数十毫秒的
+        事件循环阻塞；这里以 (mtime_ns, size) 为键缓存解析结果，文件未发生
+        变化时复用上次结果，避免重复反序列化。
+
+        用 st_mtime_ns 而非 st_mtime：部分文件系统只提供秒级 mtime 精度，
+        同一秒内的写入会导致缓存命中到旧结果。
+        """
+        cache_key = str(file_path)
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        cached = self._session_file_meta_cache.get(cache_key)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+
+        with open(file_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        msg_count = len(data) if isinstance(data, list) else 0
+
+        self._session_file_meta_cache[cache_key] = (stamp, msg_count)
+        return msg_count
 
     async def _handle_clean_ghost_sessions(self, request: web.Request):
         """清理孤立会话文件（没有对应运行时状态的聊天记录文件）"""

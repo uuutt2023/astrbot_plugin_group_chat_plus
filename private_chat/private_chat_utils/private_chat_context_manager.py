@@ -1007,7 +1007,10 @@ class ContextManager:
                     logger.info("[上下文管理器] 回退到自定义存储读取历史消息...")
 
                 # 使用现有的自定义存储读取方法
-                history = ContextManager.get_history_messages(event, max_messages)
+                # 与写路径保持一致：同步读盘放到线程池，避免冻结事件循环
+                history = await asyncio.to_thread(
+                    ContextManager.get_history_messages, event, max_messages
+                )
 
                 if history:
                     logger.info(
@@ -1226,8 +1229,13 @@ class ContextManager:
 
             # ========== 2. 回退到自定义存储 ==========
             if not official_success:
-                history = ContextManager.get_history_messages_by_params(
-                    platform_name, is_private, chat_id, max_messages
+                # 与写路径保持一致：同步读盘放到线程池，避免冻结事件循环
+                history = await asyncio.to_thread(
+                    ContextManager.get_history_messages_by_params,
+                    platform_name,
+                    is_private,
+                    chat_id,
+                    max_messages,
                 )
                 if history:
                     logger.info(

@@ -218,6 +218,10 @@ class SmartConcurrentManager:
                         continue
 
                     merged_entries.append(entry)
+                    # 先 pop 再赋值：确保同一 processing_id 重新入队时
+                    # 会移动到 dict 末尾，保持「插入顺序 == consumed_at 顺序」，
+                    # 这样 _cleanup_expired_locked 才能安全地从队首裁剪过期项。
+                    cls._consumed.pop(entry_pid, None)
                     cls._consumed[entry_pid] = {
                         "consumed_at": time.time(),
                         "anchor_processing_id": processing_id,
@@ -280,10 +284,13 @@ class SmartConcurrentManager:
             if not cls._pending[chat_id]:
                 cls._pending.pop(chat_id, None)
 
-        expired_consumed = [
-            pid
-            for pid, info in cls._consumed.items()
-            if now - info.get("consumed_at", now) > cls._EXPIRE_SECONDS
-        ]
-        for pid in expired_consumed:
-            cls._consumed.pop(pid, None)
+        # _consumed 按写入顺序插入（dict 保序），consumed_at 单调递增，
+        # 因此过期条目一定聚集在头部：从队首依次弹出即可，
+        # 复杂度为 O(本次过期条数)，而不是 O(_consumed 总条目数)。
+        # 旧实现每次加锁都全量扫描 _consumed，在活跃群里会随会话数线性变慢。
+        while cls._consumed:
+            oldest_pid = next(iter(cls._consumed))
+            info = cls._consumed[oldest_pid]
+            if now - info.get("consumed_at", now) <= cls._EXPIRE_SECONDS:
+                break
+            cls._consumed.pop(oldest_pid, None)
